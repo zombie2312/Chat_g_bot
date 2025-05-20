@@ -1,17 +1,11 @@
 {
-  "name": "chagpt-discord",
+  "name": "chatbot",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "description": "Discord bot using Ollama",
+  "type": "module", 
   "dependencies": {
-    "discord.js": "^14.7.1",
+    "discord.js": "^14.11.0",
     "dotenv": "^16.0.3",
-    "openai": "^4.48.1"
+    "axios": "^1.6.0"
   }
 }

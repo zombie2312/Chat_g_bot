@@ -1,81 +1,117 @@
-// Create a Discord Bot using OpenAI API that interacts on the Discord Server
-require('dotenv').config();
+import dotenv from 'dotenv';
+dotenv.config();
 
-// Prepare connection to Discord API
-const { Client, GatewayIntentBits } = require('discord.js');
-const client = new Client({ intents: [ 
-	GatewayIntentBits.Guilds, 
-	GatewayIntentBits.GuildMessages, 
-	GatewayIntentBits.MessageContent ] });
+import { Client, GatewayIntentBits } from 'discord.js';
+import axios from 'axios';
+import fs from 'fs';
 
-// Prepare connection to OpenAI API
-const { Configuration, OpenAIApi } = require('openai');
-const configuration = new Configuration({
-	organization: process.env.OPENAI_ORG,
-	apiKey: process.env.OPENAI_KEY,
+
+
+// Load environment variables
+const OLLAMA_SERVER_URL = process.env.OLLAMA_SERVER_URL || "http://localhost:11434/api/chat";
+const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "deepseek-r1:7b";
+const BOT_NAME = process.env.BOT_NAME || "AI Bot"; // Load bot name from .env
+
+// Function to get response, filter data, and save logs
+async function getOllamaResponse(userMessage, conversationHistory) {
+    try {
+        // Adjust prompt for direct answers instead of summarization
+        let prompt = `You are ${BOT_NAME}, an AI assistant in this Discord channel. Answer questions concisely and clearly while keeping conversations engaging. 
+        
+        Your responses should directly address the user's question rather than summarizing your role. If asked about your name, you reply: '${BOT_NAME}'. 
+        
+        Recent conversation history:\n${conversationHistory}\nUser Question: ${userMessage}\nResponse:`;
+
+        const response = await axios.post(OLLAMA_SERVER_URL, {
+            model: OLLAMA_MODEL,
+            messages: [{ role: "user", content: prompt }]
+        }, { responseType: "stream" });
+
+        let fullResponse = "";
+        let thoughtProcess = "";
+        let captureResponse = false;
+
+        response.data.on("data", chunk => {
+            const data = JSON.parse(chunk.toString());
+            if (data.message?.content) {
+                const content = data.message.content;
+
+                if (content.includes("</think>")) {
+                    captureResponse = true;
+                } else if (!captureResponse) {
+                    thoughtProcess += content;  // Log everything before </think>
+                } else {
+                    fullResponse += content;  // Collect final response
+                }
+
+                console.log("Ollama Thinking:", content);  // Debugging in terminal
+            }
+        });
+
+        return new Promise(resolve => {
+            response.data.on("end", () => {
+                const finalResponse = fullResponse.trim() || "No valid response received.";
+
+                // Save thought process, user message, and final response to a log file
+                const logEntry = `User Message: ${userMessage}\nConversation History:\n${conversationHistory}\nOllama Thinking:\n${thoughtProcess}\nFinal Response:\n${finalResponse}\n\n`;
+                fs.appendFileSync("ollama_log.txt", logEntry);
+
+                resolve(finalResponse);
+            });
+        });
+
+    } catch (error) {
+        console.error("Ollama API Error:", error.response?.data || error.message);
+        return "I couldn't generate a response.";
+    }
+}
+
+
+// Initialize Discord Bot
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent
+    ]
 });
-const openai = new OpenAIApi(configuration);
 
-// Check for when messages are sent
-client.on("messageCreate", async function(message){
-	try {
-		// Don't respond to yourself or other bots
-	if(message.author.bot) return;
+client.on("messageCreate", async function(message) {
+    try {
+        if (message.author.bot) return;
+        if (!message.mentions.has(client.user)) return;
 
-	// If the message does not contain the word
-	if(!(
-		message.content.toLowerCase().includes("chatgpt") || 
-		message.content.toLowerCase().includes("<@1059088461694505021>") || 
-		message.content.toLowerCase().includes("adrian"))){
-		// check if at least chatgpt was tagged, if not, return
-		if(!message.mentions.has(client.user)) return;
-	}
-	
+        const userMessage = message.content.replace(`<@${client.user.id}>`, "").trim();
+        if (!userMessage) return;
 
-	// get the current channel from the message and retrieve the last 5 messages
-	const channel = message.channel;
-	channel.sendTyping();
-	const messages = await channel.messages.fetch({ limit: 10 });
-	
-	// combine all the messages into a simple string eg username: message\n
-	let history = messages.reverse().map(m => `${m.author.username}: ${m.content}`).join("\n");
-	
+        message.channel.sendTyping();
 
-	let prompt =`ChatGPT is a friendly positive member on the Codex Channel on Discord, a channel about no-code tools, ui, ux. Occasionally it will also chat to itself to provide entertainment or insights into web topics.\n\n\
+        // Fetch recent conversation history
+        const messages = await message.channel.messages.fetch({ limit: 10 });
+        let history = messages.reverse().map(m => `${m.author.username}: ${m.content}`).join("\n");
 
-Adrian Twarog: I'm also making a new video today, can't wait to release it\n\
-ChatGPT: That's great, I'm looking forward to it!\n\
-Adrian Twarog: Chatgpt, what are you doing right now\n\
-ChatGPT: Just trying to be a helpful supportive member of this Codex channel\n\
-${history}\n\
-ChatGPT:`;
+        // Get summarized response from Ollama
+        const reply = await getOllamaResponse(userMessage, history);
 
-	console.log(prompt);
+        // Split response into parts if exceeding 3000 characters
+        const maxLength = 3000;
+        let remainingReply = reply;
+        while (remainingReply.length > 0) {
+            const chunk = remainingReply.substring(0, maxLength);
+            remainingReply = remainingReply.substring(maxLength);
 
+            // Send formatted message with code block and user mention
+            await message.channel.send(`<@${message.author.id}>\n\`\`\`${chunk}\`\`\``);
+        }
 
-	const gptResponse = await openai.createCompletion({
-		model: "text-davinci-003",
-		prompt: prompt,
-		max_tokens: 256,
-		temperature: 0.5,
-		presence_penalty: 1, 
-		frequency_penalty: 1.5,
-		stop: ["ChatGPT:", "Adrian Twarog:"],
-	  });
-	
-	let ChatGPTreply = gptResponse.data.choices[0].text;
-	if(ChatGPTreply.length < 1){
-		return;
-	}
-	// Otherwise, remove the text ChatGPT: string at the strart of the message
-	// ChatGPTreply = ChatGPTreply.substring(8);
-	message.reply(`${ChatGPTreply}`);
-	return;
-	} catch (err){
-		console.log(err)
-	}
-})
+    } catch (err) {
+        console.error("Error:", err);
+    }
+});
 
-// Log the bot into Discord
-client.login(process.env.DISCORD_TOKEN);
-console.log("ChatGPT is running");
+// Login bot using environment token
+client.login(DISCORD_TOKEN);
+console.log("Connecting to Discord...");
+console.log(`${BOT_NAME} is running...`);
+console.log(`Ollama server at: ${process.env.OLLAMA_SERVER_URL}`);
